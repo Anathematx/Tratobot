@@ -191,3 +191,33 @@ def weekly_report(db: Database, chat_id: int, today: date, paydays: tuple[int, .
             + "\n".join(f"• {fmt_day(d)}: {escape(r.name)} — {fmt_money(r.amount)}" for r, d in upcoming)
         )
     return "\n\n".join(parts)
+
+
+def daily_report(db: Database, chat_id: int, today: date, paydays: tuple[int, ...] = ()) -> str:
+    """Утренний свод: траты и поступления за вчера, итог месяца и сколько свободно до зарплаты."""
+    yesterday = today - timedelta(days=1)
+    expenses = db.expenses(chat_id, yesterday, today)
+    incomes = db.incomes(chat_id, yesterday, today)
+    lines = [f"<b>☀️ Свод за вчера, {fmt_day(yesterday)}</b>", ""]
+    if not expenses:
+        lines.append("Трат не было.")
+    else:
+        total = sum(e.amount for e in expenses)
+        lines.append(f"Потрачено: <b>{fmt_money(total)}</b>")
+        for cat, amount in by_category(expenses).items():
+            items = [e for e in expenses if e.category == cat]
+            notes = ", ".join(escape(e.note) for e in items if e.note)
+            suffix = f" ({notes})" if notes else ""
+            lines.append(f"• {escape(cat)}: {fmt_money(amount)}{suffix}")
+    for i in incomes:
+        lines.append(f"💰 Доход: {fmt_money(i.amount)} — {escape(i.kind)}")
+
+    month_start = yesterday.replace(day=1)
+    month_spent = sum(e.amount for e in db.expenses(chat_id, month_start, today))
+    lines += ["", f"С начала месяца потрачено: {fmt_money(month_spent)}", "", budget_block(db, chat_id, today, paydays)]
+
+    soon = upcoming_payments(db.recurring(chat_id), today, today + timedelta(days=3))
+    if soon:
+        lines += ["", "<b>Скоро платежи</b>"]
+        lines += [f"• {fmt_day(d)}: {escape(r.name)} — {fmt_money(r.amount)}" for r, d in soon]
+    return "\n".join(lines)

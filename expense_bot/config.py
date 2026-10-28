@@ -16,7 +16,11 @@ class Config:
     allowed_users: frozenset[int] = frozenset()
     # Еженедельный отчёт: день недели (mon..sun) и час
     report_day: str = "mon"
-    report_hour: int = 10
+    report_hour: int = 9
+    # Утренний свод за вчерашний день (час)
+    daily_hour: int = 9
+    # Через сколько минут удалять сообщения из чата (0 — не удалять)
+    autodelete_minutes: int = 30
     # Ежедневная проверка плановых платежей
     reminder_hour: int = 10
     # За сколько дней предупреждать о платеже
@@ -49,7 +53,9 @@ def load_config() -> Config:
         tz=ZoneInfo(os.environ.get("TZ_NAME", "Europe/Moscow")),
         allowed_users=frozenset(_int_set(os.environ.get("ALLOWED_USERS", ""))),
         report_day=os.environ.get("REPORT_DAY", "mon"),
-        report_hour=int(os.environ.get("REPORT_HOUR", "10")),
+        report_hour=int(os.environ.get("REPORT_HOUR", "9")),
+        daily_hour=int(os.environ.get("DAILY_HOUR", "9")),
+        autodelete_minutes=int(os.environ.get("AUTODELETE_MINUTES", "30")),
         reminder_hour=int(os.environ.get("REMINDER_HOUR", "10")),
         remind_days_before=int(os.environ.get("REMIND_DAYS_BEFORE", "2")),
         paydays=tuple(sorted(_int_set(os.environ.get("PAYDAYS", "")))),

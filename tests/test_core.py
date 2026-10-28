@@ -142,3 +142,43 @@ def test_load_env_file(tmp_path, monkeypatch):
     assert os.environ["BOT_TOKEN"] == "1:abc"
     assert os.environ["PAYDAYS"] == "5,20"
     assert os.environ["TZ_NAME"] == "Europe/Moscow"  # уже заданное не перезаписывается
+
+
+def test_daily_report(db):
+    from expense_bot.reports import daily_report
+
+    db.add_income(CHAT, 3000000, "аванс", date(2026, 10, 20))
+    db.add_expense(CHAT, 50000, "продукты", date(2026, 10, 27), "молоко")
+    db.add_expense(CHAT, 30000, "продукты", date(2026, 10, 27))
+    db.add_expense(CHAT, 120000, "такси", date(2026, 10, 27))
+    db.add_expense(CHAT, 99900, "кафе", date(2026, 10, 28))  # сегодня — в свод за вчера не попадает
+    text = daily_report(db, CHAT, TODAY)
+    assert "Свод за вчера, 27 октября" in text
+    assert "Потрачено: <b>2 000 ₽</b>" in text
+    assert "• такси: 1 200 ₽" in text
+    assert "• продукты: 800 ₽ (молоко)" in text
+    assert "кафе" not in text.split("С начала месяца")[0]
+    assert "Трат не было." in daily_report(db, CHAT, date(2026, 10, 25))
+
+
+def test_autodelete_tracking(db):
+    import asyncio
+
+    from expense_bot.config import Config
+    from expense_bot.scheduler import delete_old_messages
+
+    db.track_message(CHAT, 10, sent_at=1000.0)
+    db.track_message(CHAT, 11, sent_at=1000.0)
+    db.track_message(CHAT, 12)  # свежее — не трогаем
+    db.track_message(CHAT, 10, sent_at=5000.0)  # повторная запись не сдвигает время
+    assert db.messages_older_than(2000.0) == {CHAT: [10, 11]}
+
+    deleted = []
+
+    class FakeBot:
+        async def delete_messages(self, chat_id, ids):
+            deleted.append((chat_id, ids))
+
+    asyncio.run(delete_old_messages(FakeBot(), db, Config(bot_token="x")))
+    assert deleted == [(CHAT, [10, 11])]
+    assert db.messages_older_than(1e12) == {CHAT: [12]}

@@ -40,6 +40,12 @@ CREATE TABLE IF NOT EXISTS recurring (
     last_paid      TEXT,      -- 'YYYY-MM' месяца, за который платёж отмечен оплаченным
     last_reminded  TEXT       -- дата последнего напоминания
 );
+CREATE TABLE IF NOT EXISTS chat_messages (
+    chat_id     INTEGER NOT NULL,
+    message_id  INTEGER NOT NULL,
+    sent_at     REAL NOT NULL,   -- unix time
+    PRIMARY KEY (chat_id, message_id)
+);
 CREATE INDEX IF NOT EXISTS idx_expenses_chat_day ON expenses(chat_id, day);
 CREATE INDEX IF NOT EXISTS idx_incomes_chat_day ON incomes(chat_id, day);
 """
@@ -196,4 +202,26 @@ class Database:
 
     def mark_recurring_reminded(self, rec_id: int, day: date) -> None:
         self.conn.execute("UPDATE recurring SET last_reminded=? WHERE id=?", (day.isoformat(), rec_id))
+        self.conn.commit()
+
+    # --- сообщения чата для автоудаления ---
+    def track_message(self, chat_id: int, message_id: int, sent_at: float | None = None) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO chat_messages(chat_id, message_id, sent_at) VALUES (?, ?, ?)",
+            (chat_id, message_id, time.time() if sent_at is None else sent_at),
+        )
+        self.conn.commit()
+
+    def messages_older_than(self, ts: float) -> dict[int, list[int]]:
+        result: dict[int, list[int]] = {}
+        for r in self.conn.execute(
+            "SELECT chat_id, message_id FROM chat_messages WHERE sent_at < ? ORDER BY chat_id, message_id", (ts,)
+        ):
+            result.setdefault(r["chat_id"], []).append(r["message_id"])
+        return result
+
+    def forget_messages(self, chat_id: int, message_ids: list[int]) -> None:
+        self.conn.executemany(
+            "DELETE FROM chat_messages WHERE chat_id=? AND message_id=?", [(chat_id, m) for m in message_ids]
+        )
         self.conn.commit()

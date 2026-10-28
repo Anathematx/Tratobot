@@ -62,6 +62,7 @@ HELP = """<b>Как пользоваться</b>
 <b>Отчёты</b>
 /balance — сколько осталось до следующей зарплаты
 /week — анализ за прошлую неделю (приходит сам по понедельникам)
+Каждое утро бот присылает свод трат за вчера.
 /month — расходы за текущий месяц
 /lastmonth — за прошлый месяц
 /categories — ваши категории
@@ -80,9 +81,22 @@ class AccessMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 
+class TrackIncomingMiddleware(BaseMiddleware):
+    """Запоминает сообщения пользователя, чтобы потом удалить их из чата."""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    async def __call__(self, handler, event: TelegramObject, data: dict):
+        if isinstance(event, Message):
+            self.db.track_message(event.chat.id, event.message_id)
+        return await handler(event, data)
+
+
 def build_router(db: Database, config: Config) -> Router:
     router = Router()
     router.message.middleware(AccessMiddleware(config.allowed_users))
+    router.message.middleware(TrackIncomingMiddleware(db))
     router.callback_query.middleware(AccessMiddleware(config.allowed_users))
 
     # Суммы, для которых ждём выбор категории: chat_id -> (сумма, дата, список категорий на кнопках)
@@ -216,23 +230,23 @@ def build_router(db: Database, config: Config) -> Router:
             text += "\n\n<b>Ближайшие платежи</b>\n" + "\n".join(
                 f"• {fmt_day(d)}: {escape(r.name)} — {fmt_money(r.amount)}" for r, d in upcoming
             )
-        await message.answer(text)
+        await message.answer(text, reply_markup=MAIN_KB)
 
     @router.message(Command("week"))
     async def week(message: Message) -> None:
-        await message.answer(weekly_report(db, message.chat.id, today(), config.paydays))
+        await message.answer(weekly_report(db, message.chat.id, today(), config.paydays), reply_markup=MAIN_KB)
 
     @router.message(Command("month"))
     async def month(message: Message) -> None:
         t = today()
         start = t.replace(day=1)
-        await message.answer(period_report(db, message.chat.id, start, t + timedelta(days=1), "Расходы за месяц"))
+        await message.answer(period_report(db, message.chat.id, start, t + timedelta(days=1), "Расходы за месяц"), reply_markup=MAIN_KB)
 
     @router.message(Command("lastmonth"))
     async def last_month(message: Message) -> None:
         end = today().replace(day=1)
         start = (end - timedelta(days=1)).replace(day=1)
-        await message.answer(period_report(db, message.chat.id, start, end, "Расходы за прошлый месяц"))
+        await message.answer(period_report(db, message.chat.id, start, end, "Расходы за прошлый месяц"), reply_markup=MAIN_KB)
 
     @router.message(Command("categories"))
     async def categories(message: Message) -> None:
@@ -244,7 +258,7 @@ def build_router(db: Database, config: Config) -> Router:
 
     @router.message(Command("undo"))
     async def undo(message: Message) -> None:
-        await message.answer(_undo_text(db.delete_last_entry(message.chat.id)))
+        await message.answer(_undo_text(db.delete_last_entry(message.chat.id)), reply_markup=MAIN_KB)
 
     @router.callback_query(F.data == "undo")
     async def undo_button(call: CallbackQuery) -> None:
@@ -298,7 +312,8 @@ def build_router(db: Database, config: Config) -> Router:
         awaiting_income.discard(message.chat.id)
         await message.answer(
             "Введите сумму расхода, например <code>500</code>, и я предложу категорию. "
-            "Можно сразу с категорией: <code>500 продукты</code>."
+            "Можно сразу с категорией: <code>500 продукты</code>.",
+            reply_markup=MAIN_KB,
         )
 
     @router.message(F.text == BTN_INCOME)
@@ -307,7 +322,8 @@ def build_router(db: Database, config: Config) -> Router:
         awaiting_income.add(message.chat.id)
         await message.answer(
             "Введите сумму дохода, например <code>60000</code>, и я спрошу, зарплата это или аванс. "
-            "Можно сразу: <code>60000 зарплата</code>."
+            "Можно сразу: <code>60000 зарплата</code>.",
+            reply_markup=MAIN_KB,
         )
 
     @router.message(F.text == BTN_BALANCE)
@@ -336,7 +352,7 @@ def build_router(db: Database, config: Config) -> Router:
         try:
             entry = parse_entry(text, t, default_label="")
         except ParseError as e:
-            await message.answer(f"{e}\nСправка: /help")
+            await message.answer(f"{e}\nСправка: /help", reply_markup=MAIN_KB)
             return
         if not entry.label:
             cats = categories_for(message.chat.id)
