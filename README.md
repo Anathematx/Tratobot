@@ -18,6 +18,8 @@ Telegram-бот для личного бюджета: записывает за�
 
 ### На сервере через Docker
 
+Подробная инструкция для новичка: [docs/DEPLOY.md](docs/DEPLOY.md). Кратко:
+
 ```bash
 git clone <репозиторий> expense-bot && cd expense-bot
 cp .env.example .env && nano .env
