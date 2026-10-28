@@ -9,7 +9,7 @@ from aiogram.types import BotCommand
 from .bot import build_router
 from .config import load_config
 from .db import Database
-from .scheduler import setup_scheduler
+from .scheduler import TrackSentMessages, setup_scheduler
 
 COMMANDS = [
     BotCommand(command="balance", description="Сколько осталось до зарплаты"),
@@ -31,6 +31,7 @@ async def main() -> None:
     config = load_config()
     db = Database(config.db_path)
     bot = Bot(config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    bot.session.middleware(TrackSentMessages(db))
     dp = Dispatcher()
     dp.include_router(build_router(db, config))
     await bot.set_my_commands(COMMANDS)

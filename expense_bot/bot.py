@@ -11,7 +11,9 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
     Message,
+    ReplyKeyboardMarkup,
     TelegramObject,
 )
 
@@ -20,11 +22,29 @@ from .db import Database
 from .parsing import ParseError, fmt_money, parse_entry, parse_recurring
 from .reports import budget_block, fmt_day, month_key, next_due, period_report, upcoming_payments, weekly_report
 
+BTN_EXPENSE = "➖ Расход"
+BTN_INCOME = "➕ Доход"
+BTN_BALANCE = "💼 Баланс"
+BTN_WEEK = "📊 Отчёт за неделю"
+INCOME_KINDS = ["зарплата", "аванс", "другое"]
+
+MAIN_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=BTN_EXPENSE), KeyboardButton(text=BTN_INCOME)],
+        [KeyboardButton(text=BTN_BALANCE), KeyboardButton(text=BTN_WEEK)],
+    ],
+    resize_keyboard=True,
+    is_persistent=True,
+    input_field_placeholder="500 продукты",
+)
+
 DEFAULT_CATEGORIES = ["продукты", "кафе", "транспорт", "дом", "здоровье", "развлечения", "одежда", "связь"]
 
 HELP = """<b>Как пользоваться</b>
 
-<b>Расход</b> — просто напишите сумму и категорию:
+Кнопки «➖ Расход» и «➕ Доход» внизу спросят сумму и предложат категорию.
+
+<b>Расход</b> — можно и без кнопок, просто напишите сумму и категорию:
 <code>500 продукты</code>
 <code>1 200 такси до работы</code>
 <code>350 кафе вчера</code> или <code>350 кафе 25.10</code>
@@ -42,6 +62,7 @@ HELP = """<b>Как пользоваться</b>
 <b>Отчёты</b>
 /balance — сколько осталось до следующей зарплаты
 /week — анализ за прошлую неделю (приходит сам по понедельникам)
+Каждое утро бот присылает свод трат за вчера.
 /month — расходы за текущий месяц
 /lastmonth — за прошлый месяц
 /categories — ваши категории
@@ -60,13 +81,30 @@ class AccessMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 
+class TrackIncomingMiddleware(BaseMiddleware):
+    """Запоминает сообщения пользователя, чтобы потом удалить их из чата."""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    async def __call__(self, handler, event: TelegramObject, data: dict):
+        if isinstance(event, Message):
+            self.db.track_message(event.chat.id, event.message_id)
+        return await handler(event, data)
+
+
 def build_router(db: Database, config: Config) -> Router:
     router = Router()
     router.message.middleware(AccessMiddleware(config.allowed_users))
+    router.message.middleware(TrackIncomingMiddleware(db))
     router.callback_query.middleware(AccessMiddleware(config.allowed_users))
 
     # Суммы, для которых ждём выбор категории: chat_id -> (сумма, дата, список категорий на кнопках)
     pending: dict[int, tuple[int, date, list[str]]] = {}
+    # Доходы, для которых ждём выбор вида (зарплата, аванс): chat_id -> (сумма, дата)
+    pending_income: dict[int, tuple[int, date]] = {}
+    # Чаты, где нажали «Доход» и следующее сообщение — сумма дохода
+    awaiting_income: set[int] = set()
 
     def today() -> date:
         return datetime.now(config.tz).date()
@@ -78,27 +116,42 @@ def build_router(db: Database, config: Config) -> Router:
         cats = db.categories(chat_id)
         return (cats + [c for c in DEFAULT_CATEGORIES if c not in cats])[:12]
 
+    def income_text(chat_id: int, amount: int, kind: str, day: date) -> str:
+        return (
+            f"💰 Доход {fmt_money(amount)} — {escape(kind)}, {fmt_day(day)}\n\n"
+            + budget_block(db, chat_id, today(), config.paydays)
+        )
+
     async def save_income(message: Message, text: str) -> None:
         try:
-            entry = parse_entry(text, today(), default_label="доход")
+            entry = parse_entry(text, today(), default_label="")
         except ParseError as e:
             await message.answer(f"{e}\nПример: <code>+60000 зарплата</code>")
             return
+        if not entry.label:
+            # Только сумма — предлагаем выбрать вид дохода кнопками
+            pending_income[message.chat.id] = (entry.amount, entry.day)
+            await message.answer(
+                f"{fmt_money(entry.amount)} — это:",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text=k.capitalize(), callback_data=f"inc:{i}")
+                    for i, k in enumerate(INCOME_KINDS)
+                ]]),
+            )
+            return
         db.add_income(message.chat.id, entry.amount, entry.label, entry.day, entry.note)
         await message.answer(
-            f"💰 Доход {fmt_money(entry.amount)} — {escape(entry.label)}, {fmt_day(entry.day)}\n\n"
-            + budget_block(db, message.chat.id, today(), config.paydays),
-            reply_markup=undo_kb(),
+            income_text(message.chat.id, entry.amount, entry.label, entry.day), reply_markup=undo_kb()
         )
 
     @router.message(CommandStart())
     async def start(message: Message) -> None:
         db.add_user(message.chat.id)
-        await message.answer("Привет! Я помогу вести учёт доходов и расходов.\n\n" + HELP)
+        await message.answer("Привет! Я помогу вести учёт доходов и расходов.\n\n" + HELP, reply_markup=MAIN_KB)
 
     @router.message(Command("help"))
     async def help_(message: Message) -> None:
-        await message.answer(HELP)
+        await message.answer(HELP, reply_markup=MAIN_KB)
 
     @router.message(Command("income"))
     async def income(message: Message, command: CommandObject) -> None:
@@ -177,23 +230,23 @@ def build_router(db: Database, config: Config) -> Router:
             text += "\n\n<b>Ближайшие платежи</b>\n" + "\n".join(
                 f"• {fmt_day(d)}: {escape(r.name)} — {fmt_money(r.amount)}" for r, d in upcoming
             )
-        await message.answer(text)
+        await message.answer(text, reply_markup=MAIN_KB)
 
     @router.message(Command("week"))
     async def week(message: Message) -> None:
-        await message.answer(weekly_report(db, message.chat.id, today(), config.paydays))
+        await message.answer(weekly_report(db, message.chat.id, today(), config.paydays), reply_markup=MAIN_KB)
 
     @router.message(Command("month"))
     async def month(message: Message) -> None:
         t = today()
         start = t.replace(day=1)
-        await message.answer(period_report(db, message.chat.id, start, t + timedelta(days=1), "Расходы за месяц"))
+        await message.answer(period_report(db, message.chat.id, start, t + timedelta(days=1), "Расходы за месяц"), reply_markup=MAIN_KB)
 
     @router.message(Command("lastmonth"))
     async def last_month(message: Message) -> None:
         end = today().replace(day=1)
         start = (end - timedelta(days=1)).replace(day=1)
-        await message.answer(period_report(db, message.chat.id, start, end, "Расходы за прошлый месяц"))
+        await message.answer(period_report(db, message.chat.id, start, end, "Расходы за прошлый месяц"), reply_markup=MAIN_KB)
 
     @router.message(Command("categories"))
     async def categories(message: Message) -> None:
@@ -205,7 +258,7 @@ def build_router(db: Database, config: Config) -> Router:
 
     @router.message(Command("undo"))
     async def undo(message: Message) -> None:
-        await message.answer(_undo_text(db.delete_last_entry(message.chat.id)))
+        await message.answer(_undo_text(db.delete_last_entry(message.chat.id)), reply_markup=MAIN_KB)
 
     @router.callback_query(F.data == "undo")
     async def undo_button(call: CallbackQuery) -> None:
@@ -241,12 +294,57 @@ def build_router(db: Database, config: Config) -> Router:
             f"✍️ {fmt_money(amount)} — {escape(category)}, {fmt_day(day)}", reply_markup=undo_kb()
         )
 
+    @router.callback_query(F.data.startswith("inc:"))
+    async def choose_income_kind(call: CallbackQuery) -> None:
+        item = pending_income.pop(call.message.chat.id, None)
+        if item is None:
+            await call.answer("Сумма устарела, введите заново")
+            return
+        amount, day = item
+        kind = INCOME_KINDS[int(call.data.split(":")[1])]
+        db.add_income(call.message.chat.id, amount, kind, day)
+        await call.answer()
+        await call.message.edit_text(income_text(call.message.chat.id, amount, kind, day), reply_markup=undo_kb())
+
+    @router.message(F.text == BTN_EXPENSE)
+    async def expense_button(message: Message) -> None:
+        db.add_user(message.chat.id)
+        awaiting_income.discard(message.chat.id)
+        await message.answer(
+            "Введите сумму расхода, например <code>500</code>, и я предложу категорию. "
+            "Можно сразу с категорией: <code>500 продукты</code>.",
+            reply_markup=MAIN_KB,
+        )
+
+    @router.message(F.text == BTN_INCOME)
+    async def income_button(message: Message) -> None:
+        db.add_user(message.chat.id)
+        awaiting_income.add(message.chat.id)
+        await message.answer(
+            "Введите сумму дохода, например <code>60000</code>, и я спрошу, зарплата это или аванс. "
+            "Можно сразу: <code>60000 зарплата</code>.",
+            reply_markup=MAIN_KB,
+        )
+
+    @router.message(F.text == BTN_BALANCE)
+    async def balance_button(message: Message) -> None:
+        await balance(message)
+
+    @router.message(F.text == BTN_WEEK)
+    async def week_button(message: Message) -> None:
+        await week(message)
+
     @router.message(F.text & ~F.text.startswith("/"))
     async def free_text(message: Message) -> None:
         db.add_user(message.chat.id)
         text = message.text.strip()
         if text.startswith("+"):
+            awaiting_income.discard(message.chat.id)
             await save_income(message, text[1:])
+            return
+        if message.chat.id in awaiting_income:
+            awaiting_income.discard(message.chat.id)
+            await save_income(message, text)
             return
         t = today()
         words = text.split()
@@ -254,7 +352,7 @@ def build_router(db: Database, config: Config) -> Router:
         try:
             entry = parse_entry(text, t, default_label="")
         except ParseError as e:
-            await message.answer(f"{e}\nСправка: /help")
+            await message.answer(f"{e}\nСправка: /help", reply_markup=MAIN_KB)
             return
         if not entry.label:
             cats = categories_for(message.chat.id)
