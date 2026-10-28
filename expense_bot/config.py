@@ -25,7 +25,21 @@ class Config:
     paydays: tuple[int, ...] = ()
 
 
+def load_env_file(path: str = ".env") -> None:
+    """Подхватывает настройки из .env при запуске без Docker; уже заданные переменные не перезаписывает."""
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8-sig") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
 def load_config() -> Config:
+    load_env_file()
     token = os.environ.get("BOT_TOKEN", "")
     if not token:
         raise RuntimeError("Не задана переменная окружения BOT_TOKEN")

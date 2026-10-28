@@ -127,3 +127,18 @@ def test_expected_income_with_paydays_and_single_income(db):
     assert expected_next_income(db, CHAT, TODAY) is None
     db.add_income(CHAT, 100, "зарплата", date(2026, 10, 20))
     assert expected_next_income(db, CHAT, TODAY) == date(2026, 11, 4)
+
+
+def test_load_env_file(tmp_path, monkeypatch):
+    from expense_bot.config import load_env_file
+
+    env = tmp_path / ".env"
+    env.write_text('# comment\nBOT_TOKEN="1:abc"\nPAYDAYS=5,20\nTZ_NAME=Asia/Omsk\n', encoding="utf-8")
+    monkeypatch.delenv("BOT_TOKEN", raising=False)
+    monkeypatch.delenv("PAYDAYS", raising=False)
+    monkeypatch.setenv("TZ_NAME", "Europe/Moscow")
+    load_env_file(str(env))
+    import os
+    assert os.environ["BOT_TOKEN"] == "1:abc"
+    assert os.environ["PAYDAYS"] == "5,20"
+    assert os.environ["TZ_NAME"] == "Europe/Moscow"  # уже заданное не перезаписывается

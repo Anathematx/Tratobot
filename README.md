@@ -34,9 +34,19 @@ docker compose logs -f
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
-export $(grep -v '^#' .env | xargs)
 python -m expense_bot
 ```
+
+На Windows (PowerShell):
+
+```powershell
+py -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+copy .env.example .env   # затем впишите BOT_TOKEN и ALLOWED_USERS в .env
+.venv\Scripts\python -m expense_bot
+```
+
+Настройки читаются из файла `.env` в текущей папке; переменные окружения, заданные явно, имеют приоритет.
 
 ## Настройки (`.env`)
 
